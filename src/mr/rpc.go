@@ -15,18 +15,19 @@ const (
 	Idle
 )
 
-// 注册请求和回复
-type RegisterArgs struct{}
+type RegisterArgs struct {
+	WorkerId int
+}
+
 type RegisterReply struct {
 	WorkerId int
 }
 
-type ExampleArgs struct {
-	X int
+type HeartRequest struct {
+	workerId int
 }
 
-type ExampleReply struct {
-	Y int
+type HeartReply struct {
 }
 
 type TaskRequest struct {
@@ -34,6 +35,7 @@ type TaskRequest struct {
 	workerState  int
 	FileName     string
 	ReduceId     int
+	workerId     int
 }
 
 type TaskResponse struct {
