@@ -59,10 +59,10 @@ func (c *Coordinator) Done() bool {
 }
 
 func (c *Coordinator) AllocateTasks(args *TaskRequest, reply *TaskResponse) error {
-	workerId := args.workerId
+	workerId := args.WorkerId
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
-	if args.workerState == Idle {
+	if args.WorkerState == Idle {
 		if len(c.mapCh) != 0 {
 			filename := <-c.mapCh
 			c.mapState[filename] = Allocated
@@ -78,13 +78,13 @@ func (c *Coordinator) AllocateTasks(args *TaskRequest, reply *TaskResponse) erro
 			c.checkHeartBeat(workerId)
 			return nil
 		}
-	} else if args.workerState == MapFinished {
+	} else if args.WorkerState == MapFinished {
 		c.mapState[args.FileName] = Finished
 		if checkMapTask(c) {
 			c.mapFinished = true
 		}
-	} else if args.workerState == ReduceFinished {
-		c.mapState[args.FileName] = Finished
+	} else if args.WorkerState == ReduceFinished {
+		c.reduceState[args.ReduceId] = Finished
 		if checkReduceTask(c) {
 			c.reduceFinished = true
 		}
@@ -126,7 +126,7 @@ func (c *Coordinator) ReceiveHeartbeat(arg *HeartRequest, reply *HeartReply) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	now := time.Now()
-	id := arg.workerId
+	id := arg.WorkerId
 	c.workerHeartbeats[id] = now
 }
 

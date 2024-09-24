@@ -1,6 +1,9 @@
 package mr
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 import "log"
 import "net/rpc"
 import "hash/fnv"
@@ -22,37 +25,32 @@ func ihash(key string) int {
 // main/mrworker.go calls this function.
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
+	workerId := registerWorker()
+	go sendHeartbeat(workerId)
+	args := TaskRequest{WorkerState: Idle, WorkerId: workerId}
+	reply := TaskResponse{}
+	call("Coordinator.AllocateTasks", &args, &reply)
+	if reply.TaskType == "map" {
+		doMapWork(reply.FileName)
+		args = TaskRequest{WorkerState: MapFinished, WorkerId: workerId, FileName: reply.FileName}
+		call("Coordinator.AllocateTasks", &args, &reply)
+	} else {
+		args = TaskRequest{WorkerState: ReduceFinished, WorkerId: workerId, ReduceId: reply.ReduceId}
+		call("Coordinator.AllocateTasks", &args, &reply)
+		doReduceWork(reply.ReduceId)
+	}
+}
 
-	// Your worker implementation here.
-
-	// uncomment to send the Example RPC to the coordinator.
+func doMapWork(filename string) {
 
 }
 
-// example function to show how to make an RPC call to the coordinator.
-//
-// the RPC argument and reply types are defined in rpc.go.
-func CallExample() {
-
-	// declare an argument structure.
-	args := ExampleArgs{}
-
-	// fill in the argument(s).
-	args.X = 99
-
-	// declare a reply structure.
-	reply := ExampleReply{}
-
-	// send the RPC request, wait for the reply.
-	// the "Coordinator.Example" tells the
-	// receiving server that we'd like to call
-	// the Example() method of struct Coordinator.
-	ok := call("Coordinator.Example", &args, &reply)
-	if ok {
-		// reply.Y should be 100.
-		fmt.Printf("reply.Y %v\n", reply.Y)
-	} else {
-		fmt.Printf("call failed!\n")
+func sendHeartbeat(workerId int) {
+	for {
+		time.Sleep(3 * time.Second) // 每 3 秒发送一次心跳
+		args := HeartRequest{WorkerId: workerId}
+		reply := HeartReply{}
+		call("Coordinator.ReceiveHeartbeat", &args, &reply)
 	}
 }
 
@@ -68,7 +66,7 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	}
 	defer c.Close()
 
-	err = c.Call(AllocateTasks, args, reply)
+	err = c.Call(rpcname, args, reply)
 	if err == nil {
 		return true
 	}

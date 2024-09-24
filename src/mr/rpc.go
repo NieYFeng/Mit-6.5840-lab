@@ -24,18 +24,18 @@ type RegisterReply struct {
 }
 
 type HeartRequest struct {
-	workerId int
+	WorkerId int
 }
 
 type HeartReply struct {
 }
 
 type TaskRequest struct {
-	reduceIdList []int
-	workerState  int
+	WorkerState  int
+	WorkerId     int
 	FileName     string
 	ReduceId     int
-	workerId     int
+	ReduceIdList []int
 }
 
 type TaskResponse struct {
