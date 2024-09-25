@@ -21,14 +21,15 @@ type Coordinator struct {
 	reduceState      map[int]int    //reduce任务状态[id]状态信息
 	mapCh            chan string
 	reduceCh         chan int
-	taskMap          int
 	taskReduce       int
+	reduceToMap      map[int]int
 	files            []string //输入文件列表
 	mapFinished      bool
 	reduceFinished   bool
 	workerHeartbeats map[int]time.Time // 记录每个 worker 的心跳时间
 	workerTasks      map[int]TaskInfo
 	workerCounter    int
+	mapCounter       int
 	mutex            sync.Mutex //互斥锁
 }
 
@@ -60,6 +61,7 @@ func (c *Coordinator) Done() bool {
 
 func (c *Coordinator) AllocateTasks(args *TaskRequest, reply *TaskResponse) error {
 	workerId := args.WorkerId
+	reply.NReduce = c.taskReduce
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	if args.WorkerState == Idle {
@@ -68,6 +70,7 @@ func (c *Coordinator) AllocateTasks(args *TaskRequest, reply *TaskResponse) erro
 			c.mapState[filename] = Allocated
 			reply.TaskType = "map"
 			reply.FileName = filename
+			reply.MapId = c.generateMapId()
 			c.checkHeartBeat(workerId)
 			return nil
 		} else if len(c.reduceCh) != 0 && c.mapFinished == true {
@@ -80,6 +83,8 @@ func (c *Coordinator) AllocateTasks(args *TaskRequest, reply *TaskResponse) erro
 		}
 	} else if args.WorkerState == MapFinished {
 		c.mapState[args.FileName] = Finished
+		reduceId := args.ReduceId
+		c.reduceCh <- reduceId
 		if checkMapTask(c) {
 			c.mapFinished = true
 		}
@@ -141,6 +146,11 @@ func registerWorker() int {
 	return -1
 }
 
+func (c *Coordinator) generateMapId() int {
+	c.mapCounter++ // 每次生成新的 mapId 时递增
+	return c.mapCounter
+}
+
 func (c *Coordinator) RegisterWorker(args *RegisterArgs, reply *RegisterReply) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
@@ -156,12 +166,13 @@ func (c *Coordinator) RegisterWorker(args *RegisterArgs, reply *RegisterReply) e
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{
-		mapState:       make(map[string]int),
-		reduceState:    make(map[int]int),
-		mapCh:          make(chan string),
-		reduceCh:       make(chan int),
-		taskMap:        len(files),
+		mapState:    make(map[string]int),
+		reduceState: make(map[int]int),
+		mapCh:       make(chan string),
+		reduceCh:    make(chan int),
+		//		taskMap:        len(files),
 		taskReduce:     nReduce,
+		reduceToMap:    make(map[int]int),
 		files:          []string{},
 		mapFinished:    false,
 		reduceFinished: false,
@@ -172,6 +183,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	}
 	for i := 0; i < nReduce; i++ {
 		c.reduceState[i] = UnAllocated
+		c.reduceCh <- i
 	}
 	c.server()
 	return &c

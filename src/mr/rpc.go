@@ -39,9 +39,12 @@ type TaskRequest struct {
 }
 
 type TaskResponse struct {
-	TaskType string
-	FileName string
-	ReduceId int
+	TaskType   string
+	FileName   string
+	ReduceId   int
+	MapId      int
+	MapCounter int
+	NReduce    int
 }
 
 // Add your RPC definitions here.

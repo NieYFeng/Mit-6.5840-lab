@@ -1,12 +1,23 @@
 package mr
 
 import (
+	"encoding/json"
 	"fmt"
+	"io/ioutil"
+	"os"
+	"sort"
 	"time"
 )
 import "log"
 import "net/rpc"
 import "hash/fnv"
+
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 // Map functions return a slice of KeyValue.
 type KeyValue struct {
@@ -25,24 +36,87 @@ func ihash(key string) int {
 // main/mrworker.go calls this function.
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
-	workerId := registerWorker()
-	go sendHeartbeat(workerId)
-	args := TaskRequest{WorkerState: Idle, WorkerId: workerId}
-	reply := TaskResponse{}
-	call("Coordinator.AllocateTasks", &args, &reply)
-	if reply.TaskType == "map" {
-		doMapWork(reply.FileName)
-		args = TaskRequest{WorkerState: MapFinished, WorkerId: workerId, FileName: reply.FileName}
+	for {
+		workerId := registerWorker()
+		go sendHeartbeat(workerId)
+		args := TaskRequest{WorkerState: Idle, WorkerId: workerId}
+		reply := TaskResponse{}
 		call("Coordinator.AllocateTasks", &args, &reply)
-	} else {
-		args = TaskRequest{WorkerState: ReduceFinished, WorkerId: workerId, ReduceId: reply.ReduceId}
-		call("Coordinator.AllocateTasks", &args, &reply)
-		doReduceWork(reply.ReduceId)
+		if reply.TaskType == "map" {
+			doMapWork(reply.FileName, mapf, reply.MapId, reply.NReduce)
+			args = TaskRequest{WorkerState: MapFinished, WorkerId: workerId, FileName: reply.FileName}
+			call("Coordinator.AllocateTasks", &args, &reply)
+		} else {
+			args = TaskRequest{WorkerState: ReduceFinished, WorkerId: workerId, ReduceId: reply.ReduceId}
+			doReduceWork(reply.ReduceId, reducef, reply.MapCounter)
+			call("Coordinator.AllocateTasks", &args, &reply)
+		}
 	}
 }
 
-func doMapWork(filename string) {
+func doMapWork(filename string, mapf func(string, string) []KeyValue, mapId int, n int) {
+	file, err := os.Open(filename)
+	if err != nil {
+		log.Fatalf("cannot open %v", filename)
+	}
+	content, err := ioutil.ReadAll(file)
+	if err != nil {
+		log.Fatalf("cannot read %v", filename)
+	}
+	file.Close()
+	kvs := mapf(filename, string(content))
+	intermediateFiles := make([]*os.File, n)
+	encoders := make([]*json.Encoder, n)
+	for i := 0; i < n; i++ {
+		name := fmt.Sprintf("mr-%d-%d", mapId, i)
+		intermediateFiles[i], err = os.Create(name)
+		if err != nil {
+			log.Fatalf("cannot create file %v", name)
+		}
+		encoders[i] = json.NewEncoder(intermediateFiles[i])
+		defer intermediateFiles[i].Close()
+	}
+	for _, kv := range kvs {
+		reduceId := ihash(kv.Key) % n
+		err := encoders[reduceId].Encode(&kv)
+		if err != nil {
+			log.Fatalf("cannot encode kv pair: %v", err)
+		}
+	}
+}
 
+func doReduceWork(reduceId int, reducef func(string, []string) string, n int) {
+	intermediate := []KeyValue{}
+	for i := 0; i < n; i++ {
+		name := fmt.Sprintf("mr-%d-%d", i, reduceId)
+		file, _ := os.Open(name)
+		dec := json.NewDecoder(file)
+		for {
+			var kv KeyValue
+			if err := dec.Decode(&kv); err != nil {
+				break
+			}
+			intermediate = append(intermediate, kv)
+		}
+		file.Close()
+	}
+	sort.Sort(ByKey(intermediate))
+	oname := fmt.Sprintf("mr-out-%d.txt", reduceId)
+	ofile, _ := os.Create(oname)
+	i := 0
+	for i < len(intermediate) {
+		j := i + 1
+		for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, intermediate[k].Value)
+		}
+		output := reducef(intermediate[i].Key, values)
+		fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
+		i = j
+	}
 }
 
 func sendHeartbeat(workerId int) {
