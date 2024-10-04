@@ -50,22 +50,17 @@ func Worker(mapf func(string, string) []KeyValue,
 		}
 		if reply.TaskType == "map" {
 			doMapWork(reply.FileName, mapf, reply.MapId, reply.NReduce)
-			log.Printf("doingMapWork %s", reply.FileName)
 			args = TaskRequest{WorkerState: MapFinished, WorkerId: workerId, FileName: reply.FileName}
 			call("Coordinator.AllocateTasks", &args, &reply)
 		} else {
 			doReduceWork(reply.ReduceId, reducef, reply.MapCounter)
 			args = TaskRequest{WorkerState: ReduceFinished, WorkerId: workerId, ReduceId: reply.ReduceId}
-			log.Printf("doingReduceWork %d", reply.ReduceId)
 			call("Coordinator.AllocateTasks", &args, &reply) // 确保再次调用
 		}
 	}
 }
 
 func doMapWork(filename string, mapf func(string, string) []KeyValue, mapId int, n int) {
-
-	fmt.Printf("Starting map task for file: %s, mapId: %d\n", filename, mapId)
-
 	file, err := os.Open(filename)
 	if err != nil {
 		log.Fatalf("cannot open %v", filename)
@@ -75,9 +70,6 @@ func doMapWork(filename string, mapf func(string, string) []KeyValue, mapId int,
 		log.Fatalf("cannot read %v", filename)
 	}
 	file.Close()
-
-	fmt.Printf("File %s read successfully. Size: %d bytes\n", filename, len(content))
-
 	kvs := mapf(filename, string(content))
 	intermediateFiles := make([]*os.File, n)
 	encoders := make([]*json.Encoder, n)
@@ -88,9 +80,6 @@ func doMapWork(filename string, mapf func(string, string) []KeyValue, mapId int,
 			log.Fatalf("cannot create file %v", name)
 		}
 		encoders[i] = json.NewEncoder(intermediateFiles[i])
-
-		fmt.Printf("Created intermediate file: %s\n", name)
-
 		defer intermediateFiles[i].Close()
 	}
 	for _, kv := range kvs {
@@ -100,27 +89,16 @@ func doMapWork(filename string, mapf func(string, string) []KeyValue, mapId int,
 			log.Fatalf("cannot encode kv pair: %v", err)
 		}
 	}
-	fmt.Printf("Map task for file %s completed successfully\n", filename)
 }
 
 func doReduceWork(reduceId int, reducef func(string, []string) string, n int) {
-
-	fmt.Printf("Starting reduce task for reduceId: %d\n", reduceId)
-	fmt.Printf("Starting reduce task for reduce: %d\n", n)
-
 	intermediate := []KeyValue{}
 	for i := 1; i <= n; i++ {
 		name := fmt.Sprintf("mr-%d-%d", i, reduceId)
-
-		fmt.Printf("Opening intermediate file: %s\n", name)
-
 		file, err := os.Open(name)
 		if err != nil {
 			log.Fatalf("cannot open file %v", name)
 		}
-
-		fmt.Printf("Reading from intermediate file: %s\n", name)
-
 		dec := json.NewDecoder(file)
 		for {
 			var kv KeyValue
@@ -131,14 +109,10 @@ func doReduceWork(reduceId int, reducef func(string, []string) string, n int) {
 					log.Fatalf("Decode error: %v", err)
 				}
 			}
-			fmt.Printf("Decoded Key: %s, Value: %s from %s\n", kv.Key, kv.Value, name)
 			intermediate = append(intermediate, kv)
 		}
 		file.Close()
 	}
-
-	fmt.Printf("Reduce task %d gathered %d key-value pairs\n", reduceId, len(intermediate))
-
 	sort.Sort(ByKey(intermediate))
 	oname := fmt.Sprintf("mr-out-%d.txt", reduceId)
 	ofile, _ := os.Create(oname)
@@ -154,9 +128,6 @@ func doReduceWork(reduceId int, reducef func(string, []string) string, n int) {
 		}
 		output := reducef(intermediate[i].Key, values)
 		fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
-
-		fmt.Printf("Reduced Key: %s, Result: %s\n", intermediate[i].Key, output)
-
 		i = j
 	}
 }
