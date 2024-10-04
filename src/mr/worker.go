@@ -95,12 +95,9 @@ func doMapWork(filename string, mapf func(string, string) []KeyValue, mapId int,
 	}
 	for _, kv := range kvs {
 		reduceId := ihash(kv.Key) % n
-		fmt.Printf("Key: %s, Hash: %d, ReduceId: %d\n", kv.Key, ihash(kv.Key), reduceId)
 		err := encoders[reduceId].Encode(&kv)
 		if err != nil {
 			log.Fatalf("cannot encode kv pair: %v", err)
-		} else {
-			fmt.Printf("Encoded Key: %s, Value: %s to mr-%d-%d\n", kv.Key, kv.Value, mapId, reduceId)
 		}
 	}
 	fmt.Printf("Map task for file %s completed successfully\n", filename)
@@ -112,7 +109,7 @@ func doReduceWork(reduceId int, reducef func(string, []string) string, n int) {
 	fmt.Printf("Starting reduce task for reduce: %d\n", n)
 
 	intermediate := []KeyValue{}
-	for i := 0; i < n; i++ {
+	for i := 1; i <= n; i++ {
 		name := fmt.Sprintf("mr-%d-%d", i, reduceId)
 
 		fmt.Printf("Opening intermediate file: %s\n", name)
