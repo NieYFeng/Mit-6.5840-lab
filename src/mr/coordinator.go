@@ -1,7 +1,6 @@
 package mr
 
 import (
-	"fmt"
 	"log"
 	"strconv"
 	"sync"
@@ -23,7 +22,6 @@ type Coordinator struct {
 	mapCh            chan string
 	reduceCh         chan int
 	taskReduce       int
-	reduceToMap      map[int]int
 	files            []string //输入文件列表
 	mapFinished      bool
 	reduceFinished   bool
@@ -72,9 +70,9 @@ func (c *Coordinator) AllocateTasks(args *TaskRequest, reply *TaskResponse) erro
 			reply.TaskType = "map"
 			reply.FileName = filename
 			reply.MapId = c.generateMapId()
+			c.workerTasks[workerId] = TaskInfo{"map", filename}
+			log.Printf("mapCh length: %d", len(c.mapCh))
 			c.checkHeartBeat(workerId)
-			log.Printf("%d", len(c.mapCh))
-			log.Printf("Allocating maptasks to worker %s", filename)
 			return nil
 		} else if len(c.reduceCh) != 0 && c.mapFinished == true {
 			reduceId := <-c.reduceCh
@@ -82,15 +80,14 @@ func (c *Coordinator) AllocateTasks(args *TaskRequest, reply *TaskResponse) erro
 			reply.TaskType = "reduce"
 			reply.ReduceId = reduceId
 			reply.MapCounter = c.mapCounter
-			log.Printf("Allocating reducetasks to worker %d", reduceId)
+			c.workerTasks[workerId] = TaskInfo{"reduce", strconv.Itoa(reduceId)}
+			log.Printf("reduceCh length: %d", len(c.reduceCh))
 			c.checkHeartBeat(workerId)
 			return nil
 		}
 	} else if args.WorkerState == MapFinished {
 		c.mapState[args.FileName] = Finished
-		log.Printf("MapFinished %s", args.FileName)
 		if checkMapTask(c) {
-			log.Printf("MapAllFinished")
 			c.mapFinished = true
 		}
 	} else if args.WorkerState == ReduceFinished {
@@ -115,11 +112,13 @@ func (c *Coordinator) checkHeartBeat(workerId int) {
 					delete(c.workerHeartbeats, workerId)
 					// 任务重新分配
 					if taskInfo, ok := c.workerTasks[workerId]; ok {
-						if taskInfo.TaskType == "map" {
+						value, _ := strconv.Atoi(taskInfo.Value)
+						if taskInfo.TaskType == "map" && c.mapState[taskInfo.Value] != Finished {
 							c.mapCh <- taskInfo.Value // 将 map 任务重新放回队列
-							log.Printf("Reallocate map task %s", taskInfo.Value)
 							c.mapState[taskInfo.Value] = UnAllocated
-						} else if taskInfo.TaskType == "reduce" {
+							log.Printf("mapCh length: %d", len(c.mapCh))
+							log.Printf("Map task %s re-allocated", taskInfo.Value)
+						} else if taskInfo.TaskType == "reduce" && c.reduceState[value] != Finished {
 							id, err := strconv.Atoi(taskInfo.Value)
 							if err != nil {
 								log.Printf("Failed to convert value to int: %v", err)
@@ -127,6 +126,8 @@ func (c *Coordinator) checkHeartBeat(workerId int) {
 							}
 							c.reduceCh <- id // 将 reduce 任务重新放回队列
 							c.reduceState[id] = UnAllocated
+							log.Printf("reduceCh length: %d", len(c.reduceCh))
+							log.Printf("Reduce task %s re-allocated", taskInfo.Value)
 						}
 						delete(c.workerTasks, workerId) // 移除该 worker 的任务记录
 					}
@@ -172,14 +173,12 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		//taskMap:        len(files),
 		workerHeartbeats: make(map[int]time.Time),
 		taskReduce:       nReduce,
-		reduceToMap:      make(map[int]int),
+		workerTasks:      make(map[int]TaskInfo),
 		files:            []string{},
 		mapFinished:      false,
 		reduceFinished:   false,
 		mutex:            sync.Mutex{},
 	}
-	sockname := coordinatorSock()
-	fmt.Println("Coordinator socket:", sockname)
 	for _, filename := range files {
 		c.mapState[filename] = UnAllocated
 		c.mapCh <- filename
