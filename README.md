@@ -1,6 +1,5 @@
 # Mit_6.824
 Mit_6.824(6.584) lab1
-MIT 6.824
 
 课程地址：https://pdos.csail.mit.edu/6.824/schedule.html
 
