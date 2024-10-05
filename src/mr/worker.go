@@ -55,7 +55,7 @@ func Worker(mapf func(string, string) []KeyValue,
 		} else {
 			doReduceWork(reply.ReduceId, reducef, reply.MapCounter)
 			args = TaskRequest{WorkerState: ReduceFinished, WorkerId: workerId, ReduceId: reply.ReduceId}
-			call("Coordinator.AllocateTasks", &args, &reply) // 确保再次调用
+			call("Coordinator.AllocateTasks", &args, &reply)
 		}
 	}
 }
@@ -93,7 +93,7 @@ func doMapWork(filename string, mapf func(string, string) []KeyValue, mapId int,
 
 func doReduceWork(reduceId int, reducef func(string, []string) string, n int) {
 	intermediate := []KeyValue{}
-	for i := 1; i <= n; i++ {
+	for i := 0; i < n; i++ {
 		name := fmt.Sprintf("mr-%d-%d", i, reduceId)
 		file, err := os.Open(name)
 		if err != nil {

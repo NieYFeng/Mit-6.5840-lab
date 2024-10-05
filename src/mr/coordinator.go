@@ -14,12 +14,18 @@ import "net/http"
 type TaskInfo struct {
 	TaskType string
 	Value    string
+	MapId    int
+}
+
+type MapTask struct {
+	MapId    int
+	FileName string
 }
 
 type Coordinator struct {
 	mapState         map[string]int // map任务状态[filename]状态信息
 	reduceState      map[int]int    // reduce任务状态[id]状态信息
-	mapCh            chan string
+	mapCh            chan MapTask
 	reduceCh         chan int
 	taskReduce       int
 	files            []string //输入文件列表
@@ -65,13 +71,13 @@ func (c *Coordinator) AllocateTasks(args *TaskRequest, reply *TaskResponse) erro
 	defer c.mutex.Unlock()
 	if args.WorkerState == Idle {
 		if len(c.mapCh) > 0 {
-			filename := <-c.mapCh
+			task := <-c.mapCh
+			filename := task.FileName
 			c.mapState[filename] = Allocated
 			reply.TaskType = "map"
 			reply.FileName = filename
-			reply.MapId = c.generateMapId()
-			c.workerTasks[workerId] = TaskInfo{"map", filename}
-			log.Printf("mapCh length: %d", len(c.mapCh))
+			reply.MapId = task.MapId
+			c.workerTasks[workerId] = TaskInfo{"map", filename, task.MapId}
 			c.checkHeartBeat(workerId)
 			return nil
 		} else if len(c.reduceCh) != 0 && c.mapFinished == true {
@@ -80,8 +86,7 @@ func (c *Coordinator) AllocateTasks(args *TaskRequest, reply *TaskResponse) erro
 			reply.TaskType = "reduce"
 			reply.ReduceId = reduceId
 			reply.MapCounter = c.mapCounter
-			c.workerTasks[workerId] = TaskInfo{"reduce", strconv.Itoa(reduceId)}
-			log.Printf("reduceCh length: %d", len(c.reduceCh))
+			c.workerTasks[workerId] = TaskInfo{"reduce", strconv.Itoa(reduceId), -1}
 			c.checkHeartBeat(workerId)
 			return nil
 		}
@@ -114,10 +119,8 @@ func (c *Coordinator) checkHeartBeat(workerId int) {
 					if taskInfo, ok := c.workerTasks[workerId]; ok {
 						value, _ := strconv.Atoi(taskInfo.Value)
 						if taskInfo.TaskType == "map" && c.mapState[taskInfo.Value] != Finished {
-							c.mapCh <- taskInfo.Value // 将 map 任务重新放回队列
+							c.mapCh <- MapTask{taskInfo.MapId, taskInfo.Value} // 将 map 任务重新放回队列
 							c.mapState[taskInfo.Value] = UnAllocated
-							log.Printf("mapCh length: %d", len(c.mapCh))
-							log.Printf("Map task %s re-allocated", taskInfo.Value)
 						} else if taskInfo.TaskType == "reduce" && c.reduceState[value] != Finished {
 							id, err := strconv.Atoi(taskInfo.Value)
 							if err != nil {
@@ -126,8 +129,6 @@ func (c *Coordinator) checkHeartBeat(workerId int) {
 							}
 							c.reduceCh <- id // 将 reduce 任务重新放回队列
 							c.reduceState[id] = UnAllocated
-							log.Printf("reduceCh length: %d", len(c.reduceCh))
-							log.Printf("Reduce task %s re-allocated", taskInfo.Value)
 						}
 						delete(c.workerTasks, workerId) // 移除该 worker 的任务记录
 					}
@@ -146,10 +147,6 @@ func (c *Coordinator) ReceiveHeartbeat(arg *HeartRequest, reply *HeartReply) err
 	c.workerHeartbeats[id] = now
 	return nil
 }
-func (c *Coordinator) generateMapId() int {
-	c.mapCounter++ // 每次生成新的 mapId 时递增
-	return c.mapCounter
-}
 
 func (c *Coordinator) RegisterWorker(args *RegisterArgs, reply *RegisterReply) error {
 	c.mutex.Lock()
@@ -166,11 +163,10 @@ func (c *Coordinator) RegisterWorker(args *RegisterArgs, reply *RegisterReply) e
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{
-		mapState:    make(map[string]int),
-		reduceState: make(map[int]int),
-		mapCh:       make(chan string, len(files)+5),
-		reduceCh:    make(chan int, nReduce+5),
-		//taskMap:        len(files),
+		mapState:         make(map[string]int),
+		reduceState:      make(map[int]int),
+		mapCh:            make(chan MapTask, len(files)+5),
+		reduceCh:         make(chan int, nReduce+5),
 		workerHeartbeats: make(map[int]time.Time),
 		taskReduce:       nReduce,
 		workerTasks:      make(map[int]TaskInfo),
@@ -179,9 +175,11 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		reduceFinished:   false,
 		mutex:            sync.Mutex{},
 	}
-	for _, filename := range files {
+	for i, filename := range files {
+		mapId := i
+		c.mapCounter++
 		c.mapState[filename] = UnAllocated
-		c.mapCh <- filename
+		c.mapCh <- MapTask{FileName: filename, MapId: mapId}
 	}
 	for i := 0; i < nReduce; i++ {
 		c.reduceState[i] = UnAllocated
