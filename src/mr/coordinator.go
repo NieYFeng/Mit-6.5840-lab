@@ -28,7 +28,6 @@ type Coordinator struct {
 	mapCh            chan MapTask
 	reduceCh         chan int
 	taskReduce       int
-	files            []string //输入文件列表
 	mapFinished      bool
 	reduceFinished   bool
 	workerHeartbeats map[int]time.Time // 记录每个 worker 的心跳时间
@@ -170,7 +169,6 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		workerHeartbeats: make(map[int]time.Time),
 		taskReduce:       nReduce,
 		workerTasks:      make(map[int]TaskInfo),
-		files:            []string{},
 		mapFinished:      false,
 		reduceFinished:   false,
 		mutex:            sync.Mutex{},

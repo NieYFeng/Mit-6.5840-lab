@@ -31,11 +31,10 @@ type HeartReply struct {
 }
 
 type TaskRequest struct {
-	WorkerState  int
-	WorkerId     int
-	FileName     string
-	ReduceId     int
-	ReduceIdList []int
+	WorkerState int
+	WorkerId    int
+	FileName    string
+	ReduceId    int
 }
 
 type TaskResponse struct {
