@@ -1,5 +1,6 @@
 # Mit_6.824
-Mit_6.824(6.584) lab1 jiejMIT 6.824
+Mit_6.824(6.584) lab1
+MIT 6.824
 
 课程地址：https://pdos.csail.mit.edu/6.824/schedule.html
 
@@ -15,8 +16,6 @@ Mit_6.824(6.584) lab1 jiejMIT 6.824
 4. 地理性：部署全球节点
 
 Lab1：实现一个MapReduce分布式系统
-Lab2：键/值服务器
-lab3：
 
 MapReduce论文:https://static.googleusercontent.com/media/research.google.com/zh-CN//archive/mapreduce-osdi04.pdf
 
@@ -28,7 +27,7 @@ git clone git://g.csail.mit.edu/6.5840-golabs-2024
 
 任务要求和提示都可以在课程地址中找到。
 
-![img_1.png](img_1.png)
+![img_2.png](img_2.png)
 
 实现思路：
 
