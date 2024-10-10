@@ -51,17 +51,11 @@ func (ck *Clerk) Get(key string) string {
 // must match the declared types of the RPC handler function's
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) PutAppend(key string, value string, op string) string {
-	if op == "Put" {
-		args := PutAppendArgs{Key: key, Value: value}
-		reply := PutAppendReply{}
-		ok := ck.server.Call("KVServer."+op, &args, &reply)
-	} else if op == "Append" {
-		args := PutAppendArgs{Key: key, Value: value}
-		reply := PutAppendReply{}
-		ok := ck.server.Call("KVServer."+op, &args, &reply)
-		if ok {
-			return reply.Value
-		}
+	args := PutAppendArgs{Key: key, Value: value}
+	reply := PutAppendReply{}
+	ok := ck.server.Call("KVServer."+op, &args, &reply)
+	if ok {
+		return reply.Value
 	}
 	return ""
 }
