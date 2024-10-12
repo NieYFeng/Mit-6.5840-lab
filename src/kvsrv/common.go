@@ -16,11 +16,9 @@ type PutAppendReply struct {
 }
 
 type GetArgs struct {
-	Key       string
-	RequestId int64
+	Key string
 }
 
 type GetReply struct {
-	Value   string
-	ReplyId int64
+	Value string
 }
