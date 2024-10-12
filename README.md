@@ -1,5 +1,5 @@
-# Mit_6.824
-Mit_6.824(6.584) lab1-lab5
+# Mit_6.5840
+Mit_6.5840(6.824) lab1-lab5
 
 课程地址：https://pdos.csail.mit.edu/6.824/schedule.html
 
@@ -29,7 +29,7 @@ git clone git://g.csail.mit.edu/6.5840-golabs-2024
 任务要求和提示都可以在课程地址中找到。
 
 lab1 ✅  
-lab2  
+lab2 ✅  
 lab3  
 lab4  
 lab5  
