@@ -1,21 +1,19 @@
 package raft
 
-//
-// this is an outline of the API that raft must expose to
-// the service (or tester). see comments below for
-// each of these functions for more details.
+// 这是 Raft 必须向服务（或测试器）暴露的 API 的大纲。
+// 参见下面每个函数的注释以获取更多详细信息。
 //
 // rf = Make(...)
-//   create a new Raft server.
+//   创建一个新的 Raft 服务器。
 // rf.Start(command interface{}) (index, term, isleader)
-//   start agreement on a new log entry
+//   开始对一个新的日志条目达成一致。
 // rf.GetState() (term, isLeader)
-//   ask a Raft for its current term, and whether it thinks it is leader
+//   询问 Raft 当前的任期，以及它是否认为自己是领导者。
 // ApplyMsg
-//   each time a new entry is committed to the log, each Raft peer
-//   should send an ApplyMsg to the service (or tester)
-//   in the same server.
-//
+//   每当一个新的条目被提交到日志中，每个 Raft 节点
+//   都应该通过传递给 Make() 的 applyCh 向服务（或测试器）
+//   发送一个 ApplyMsg。
+//   在相同的服务器上，将 CommandValid 设置为 true 以指示 ApplyMsg 包含一个新提交的日志条目。
 
 import (
 	//	"bytes"
@@ -28,16 +26,12 @@ import (
 	"6.5840/labrpc"
 )
 
-
-// as each Raft peer becomes aware that successive log entries are
-// committed, the peer should send an ApplyMsg to the service (or
-// tester) on the same server, via the applyCh passed to Make(). set
-// CommandValid to true to indicate that the ApplyMsg contains a newly
-// committed log entry.
+// 当每个 Raft 节点意识到连续的日志条目已提交时，
+// 该节点应通过传递给 Make() 的 applyCh 向同一服务器上的服务（或测试器）发送一个 ApplyMsg。
+// 将 CommandValid 设置为 true 以指示 ApplyMsg 包含一个新提交的日志条目。
 //
-// in part 3D you'll want to send other kinds of messages (e.g.,
-// snapshots) on the applyCh, but set CommandValid to false for these
-// other uses.
+// 在第 3D 部分中，你将需要在 applyCh 上发送其他类型的消息（例如，
+// 快照），但对于这些其他用途，将 CommandValid 设置为 false。
 type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
@@ -50,18 +44,35 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
+const (
+	Follower = iota
+	Candidate
+	Leader
+)
+
 // A Go object implementing a single Raft peer.
 type Raft struct {
-	mu        sync.Mutex          // Lock to protect shared access to this peer's state
-	peers     []*labrpc.ClientEnd // RPC end points of all peers
-	persister *Persister          // Object to hold this peer's persisted state
-	me        int                 // this peer's index into peers[]
-	dead      int32               // set by Kill()
-
+	mu              sync.Mutex          // Lock to protect shared access to this peer's state
+	peers           []*labrpc.ClientEnd // RPC end points of all peers
+	persister       *Persister          // Object to hold this peer's persisted state
+	me              int                 // this peer's index into peers[]
+	dead            int32               // set by Kill()
+	state           int                 // 当前节点的状态
+	lastHeard       time.Time           // 上次收到心跳的时间
+	electionTimeout time.Duration       // 选举超时时间
+	currentTerm     int                 // 当前节点的任期号
+	votedFor        int                 // 当前节点投票给了谁
+	log             []LogEntry          // 日志条目
 	// Your data here (3A, 3B, 3C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 
+}
+
+// LogEntry 表示 Raft 日志条目
+type LogEntry struct {
+	Term    int         // 日志条目的任期号
+	Command interface{} // 代表任意类型的值
 }
 
 // return currentTerm and whether this server
@@ -92,7 +103,6 @@ func (rf *Raft) persist() {
 	// rf.persister.Save(raftstate, nil)
 }
 
-
 // restore previously persisted state.
 func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
@@ -113,7 +123,6 @@ func (rf *Raft) readPersist(data []byte) {
 	// }
 }
 
-
 // the service says it has created a snapshot that has
 // all info up to and including index. this means the
 // service no longer needs the log through (and including)
@@ -123,56 +132,55 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
-
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 type RequestVoteArgs struct {
-	// Your data here (3A, 3B).
+	term         int
+	candidateId  int
+	lastLogIndex int
+	lastLogTerm  int
 }
 
 // example RequestVote RPC reply structure.
 // field names must start with capital letters!
 type RequestVoteReply struct {
-	// Your data here (3A).
+	term        int
+	voteGranted bool
 }
 
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
+
 }
 
-// example code to send a RequestVote RPC to a server.
-// server is the index of the target server in rf.peers[].
-// expects RPC arguments in args.
-// fills in *reply with RPC reply, so caller should
-// pass &reply.
-// the types of the args and reply passed to Call() must be
-// the same as the types of the arguments declared in the
-// handler function (including whether they are pointers).
+// 发送 RequestVote RPC 给服务器的示例代码。
+// server 是 rf.peers[] 中目标服务器的索引。
+// args 中包含 RPC 参数。
+// 用 RPC 回复填充 *reply，因此调用者应传递 &reply。
+// 传递给 Call() 的 args 和 reply 的类型必须与
+// 处理函数中声明的参数类型相同（包括它们是否是指针）。
 //
-// The labrpc package simulates a lossy network, in which servers
-// may be unreachable, and in which requests and replies may be lost.
-// Call() sends a request and waits for a reply. If a reply arrives
-// within a timeout interval, Call() returns true; otherwise
-// Call() returns false. Thus Call() may not return for a while.
-// A false return can be caused by a dead server, a live server that
-// can't be reached, a lost request, or a lost reply.
+// labrpc 包模拟了一个有损网络，其中服务器
+// 可能无法访问，请求和回复可能会丢失。
+// Call() 发送请求并等待回复。如果在超时间隔内收到回复，
+// Call() 返回 true；否则返回 false。因此 Call() 可能不会立即返回。
+// false 返回值可能是由于服务器宕机、无法访问的活跃服务器、
+// 丢失的请求或丢失的回复引起的。
 //
-// Call() is guaranteed to return (perhaps after a delay) *except* if the
-// handler function on the server side does not return.  Thus there
-// is no need to implement your own timeouts around Call().
+// Call() 保证返回（可能会有延迟）*除非*服务器端的处理函数不返回。
+// 因此不需要在 Call() 周围实现自己的超时。
 //
-// look at the comments in ../labrpc/labrpc.go for more details.
+// 有关更多详细信息，请查看 ../labrpc/labrpc.go 中的注释。
 //
-// if you're having trouble getting RPC to work, check that you've
-// capitalized all field names in structs passed over RPC, and
-// that the caller passes the address of the reply struct with &, not
-// the struct itself.
+// 如果你在使 RPC 工作时遇到问题，请检查你是否
+// 将通过 RPC 传递的结构体中的所有字段名都大写，
+// 并且调用者传递的是回复结构体的地址（&），而不是结构体本身。
+
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
 }
-
 
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
@@ -192,7 +200,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (3B).
-
 
 	return index, term, isLeader
 }
@@ -218,11 +225,28 @@ func (rf *Raft) killed() bool {
 
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
-
+		rf.mu.Lock()
 		// Your code here (3A)
 		// Check if a leader election should be started.
+		if rf.state == Follower && time.Now().Sub(rf.lastHeard) > 150*time.Millisecond {
+			rf.state = Candidate
+			rf.lastHeard = time.Now()
+			rf.currentTerm++
+			rf.votedFor = rf.me
+			args := RequestVoteArgs{
+				term:         rf.currentTerm,
+				candidateId:  rf.me,                      // 当前节点的 ID
+				lastLogIndex: len(rf.log) - 1,            // 假设的日志索引
+				lastLogTerm:  rf.log[len(rf.log)-1].Term, // 假设的日志任期号
+			}
+			reply := RequestVoteReply{}
+			for i := range rf.peers {
+				if i != rf.me { // 不向自己发送请求
+					go rf.sendRequestVote(i, &args, &reply)
+				}
+			}
 
-
+		}
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
 		ms := 50 + (rand.Int63() % 300)
@@ -248,12 +272,18 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// Your initialization code here (3A, 3B, 3C).
 
+	rf.initialize()
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
 
-
 	return rf
+}
+
+func (rf *Raft) initialize() {
+	// 使用 rand 生成 150 毫秒到 300 毫秒之间的随机时间
+	rf.electionTimeout = time.Duration(150+rand.Intn(150)) * time.Millisecond
+	rf.lastHeard = time.Now()
 }
