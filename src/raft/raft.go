@@ -163,7 +163,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
-	// 处理日志复制逻辑
 	// 如果日志索引或任期不匹配，返回失败
 	if args.PrevLogIndex >= 0 {
 		if args.PrevLogIndex >= len(rf.log) || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
@@ -194,18 +193,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		DPrintf("Raft %d: Updated commitIndex to %d from leader %d", rf.me, rf.commitIndex, args.LeaderId)
 	}
 
-	// 最后设置回复
 	rf.lastHeard = time.Now()
 	reply.Term = rf.currentTerm
 	reply.Success = true
 	DPrintf("Raft %d: AppendEntries succeeded from leader %d", rf.me, args.LeaderId)
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // example RequestVote RPC handler.
@@ -345,45 +336,35 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) ticker() {
-	for rf.killed() == false {
-		DPrintf("Raft %d ticker,state: %v,time.Now().Sub(rf.lastHeard):%v", rf.me, rf.state, time.Now().Sub(rf.lastHeard))
+	for !rf.killed() {
 		rf.mu.Lock()
+
+		// 获取当前时间
+		now := time.Now()
 		// 触发选举
 		if rf.state == Follower && time.Since(rf.lastHeard) > rf.electionTimeout {
-			DPrintf("Raft %d is Follower", rf.me)
+			DPrintf("Raft %d transitioning to Candidate state", rf.me)
 			rf.state = Candidate
-			rf.mu.Unlock()
-		} else if rf.state == Leader {
-			now := time.Now()
-			DPrintf("Raft %d is Leader", rf.me)
-			if now.Sub(rf.lastHeartbeatSent) >= time.Duration(100)*time.Millisecond {
-				for i := range rf.peers {
-					if i != rf.me {
-						go rf.sendAppendEntries(i)
-					}
-				}
-				// 记录最后一次心跳的时间
-				rf.lastHeartbeatSent = now
-			}
-			rf.mu.Unlock()
-		} else if rf.state == Candidate && time.Since(rf.lastHeard) > rf.electionTimeout {
 			rf.currentTerm++
 			rf.votedFor = rf.me
+			rf.lastHeard = time.Now()
 			LastLogIndex := -1
 			LastLogTerm := -1
 			if len(rf.log) > 0 {
 				LastLogIndex = len(rf.log) - 1
 				LastLogTerm = rf.log[LastLogIndex].Term
 			}
+
 			rf.mu.Unlock()
+
 			args := RequestVoteArgs{
 				Term:         rf.currentTerm,
-				CandidateId:  rf.me,        // 当前节点的 ID
-				LastLogIndex: LastLogIndex, // 假设的日志索引
-				LastLogTerm:  LastLogTerm,  // 假设的日志任期号
+				CandidateId:  rf.me,
+				LastLogIndex: LastLogIndex,
+				LastLogTerm:  LastLogTerm,
 			}
-			cnt := 1
-			// 使用 sync.WaitGroup 等待所有请求完成
+
+			var voteCount int32 = 1 // 计数自己的一票
 			var wg sync.WaitGroup
 			for i := range rf.peers {
 				if i != rf.me {
@@ -391,30 +372,40 @@ func (rf *Raft) ticker() {
 					go func(i int) {
 						defer wg.Done()
 						reply := RequestVoteReply{}
-						rf.sendRequestVote(i, &args, &reply)
-						if reply.VoteGranted {
-							rf.mu.Lock()
-							cnt++
-							rf.mu.Unlock()
+						if rf.sendRequestVote(i, &args, &reply) && reply.VoteGranted {
+							atomic.AddInt32(&voteCount, 1)
 						}
 					}(i)
 				}
 			}
-			// 等待所有的 goroutine 完成
 			wg.Wait()
-			DPrintf("Raft %d get %d votes", rf.me, cnt)
-			// 在所有请求完成后判断是否获得多数票
-			if cnt > len(rf.peers)/2 {
-				rf.mu.Lock()
+
+			rf.mu.Lock()
+			if int(voteCount) > len(rf.peers)/2 {
+				DPrintf("Raft %d won election, becoming Leader", rf.me)
 				rf.state = Leader
-				rf.mu.Unlock()
 			} else {
+				DPrintf("Raft %d lost election, transitioning to Follower", rf.me)
 				rf.state = Follower
 			}
+			rf.mu.Unlock()
+
+		} else if rf.state == Leader {
+			if now.Sub(rf.lastHeartbeatSent) >= 100*time.Millisecond {
+				for i := range rf.peers {
+					if i != rf.me {
+						go rf.sendAppendEntries(i)
+					}
+				}
+				rf.lastHeartbeatSent = now
+			}
+			rf.mu.Unlock()
+
+		} else {
+			rf.mu.Unlock()
 		}
-		// pause for a random amount of time between 50 and 350
-		// milliseconds.
-		ms := 50 + (rand.Int63() % 300)
+
+		ms := 150 + (rand.Int63() % 150)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
 }
@@ -439,7 +430,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.log = make([]LogEntry, 0)
 	rf.commitIndex = 0
 	rf.lastHeard = time.Now()
-	rf.electionTimeout = time.Duration(rand.Intn(150)+150) * time.Millisecond
+	rf.electionTimeout = time.Duration(rand.Intn(200)+300) * time.Millisecond
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
