@@ -1,5 +1,6 @@
 package raft
 
+// go test -run 3A
 // 这是 Raft 必须向服务（或测试器）暴露的 API 的大纲。
 // 参见下面每个函数的注释以获取更多详细信息。
 //
@@ -26,47 +27,24 @@ import (
 	"6.5840/labrpc"
 )
 
-// 当每个 Raft 节点意识到连续的日志条目已提交时，
-// 该节点应通过传递给 Make() 的 applyCh 向同一服务器上的服务（或测试器）发送一个 ApplyMsg。
-// 将 CommandValid 设置为 true 以指示 ApplyMsg 包含一个新提交的日志条目。
-//
-// 在第 3D 部分中，你将需要在 applyCh 上发送其他类型的消息（例如，
-// 快照），但对于这些其他用途，将 CommandValid 设置为 false。
-type ApplyMsg struct {
-	CommandValid bool
-	Command      interface{}
-	CommandIndex int
-
-	// For 3D:
-	SnapshotValid bool
-	Snapshot      []byte
-	SnapshotTerm  int
-	SnapshotIndex int
-}
-
-const (
-	Follower = iota
-	Candidate
-	Leader
-)
-
 // A Go object implementing a single Raft peer.
 type Raft struct {
-	mu              sync.Mutex          // Lock to protect shared access to this peer's state
-	peers           []*labrpc.ClientEnd // RPC end points of all peers
-	persister       *Persister          // Object to hold this peer's persisted state
-	me              int                 // this peer's index into peers[]
-	dead            int32               // set by Kill()
-	state           int                 // 当前节点的状态
-	lastHeard       time.Time           // 上次收到心跳的时间
-	electionTimeout time.Duration       // 选举超时时间
-	currentTerm     int                 // 当前节点的任期号
-	votedFor        int                 // 当前节点投票给了谁
-	log             []LogEntry          // 日志条目
+	mu                sync.Mutex          // Lock to protect shared access to this peer's state
+	peers             []*labrpc.ClientEnd // RPC end points of all peers
+	persister         *Persister          // Object to hold this peer's persisted state
+	me                int                 // this peer's index into peers[]
+	dead              int32               // set by Kill()
+	state             int                 // 当前节点的状态
+	lastHeard         time.Time           // 上次收到心跳的时间
+	electionTimeout   time.Duration       // 选举超时时间
+	currentTerm       int                 // 当前节点的任期号
+	votedFor          int                 // 当前节点投票给了谁
+	log               []LogEntry          // 日志条目
+	commitIndex       int                 // 已知的已提交的最大的日志条目的索引
+	lastHeartbeatSent time.Time           // 上次发送心跳的时间
 	// Your data here (3A, 3B, 3C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-
 }
 
 // LogEntry 表示 Raft 日志条目
@@ -82,6 +60,8 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	// Your code here (3A).
+	term = rf.currentTerm
+	isleader = rf.state == Leader
 	return term, isleader
 }
 
@@ -135,23 +115,124 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 type RequestVoteArgs struct {
-	term         int
-	candidateId  int
-	lastLogIndex int
-	lastLogTerm  int
+	Term         int
+	CandidateId  int
+	LastLogIndex int
+	LastLogTerm  int
 }
 
 // example RequestVote RPC reply structure.
 // field names must start with capital letters!
 type RequestVoteReply struct {
-	term        int
-	voteGranted bool
+	Term        int
+	VoteGranted bool // 是否投票给了 CandidateId
+}
+
+type AppendEntriesArgs struct {
+	Term         int
+	LeaderId     int
+	PrevLogIndex int //前一个日志的索引
+	PrevLogTerm  int //前一个日志的任期号
+	Entries      []LogEntry
+	LeaderCommit int //控制 提交日志 的进度
+}
+
+type AppendEntriesReply struct {
+	Term    int
+	Success bool
+}
+
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	// 如果请求的任期小于当前任期，直接拒绝
+	if args.Term < rf.currentTerm {
+		reply.Term = rf.currentTerm
+		reply.Success = false
+		DPrintf("Raft %d: AppendEntries rejected due to stale term from leader %d", rf.me, args.LeaderId)
+		return
+	}
+
+	// 如果请求的任期大于当前任期，更新当前任期并转换为 Follower
+	if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
+		rf.state = Follower
+		rf.votedFor = -1
+		DPrintf("Raft %d: Updated term to %d and converted to Follower due to AppendEntries from leader %d", rf.me, args.Term, args.LeaderId)
+		return
+	}
+
+	// 处理日志复制逻辑
+	// 如果日志索引或任期不匹配，返回失败
+	if args.PrevLogIndex >= 0 {
+		if args.PrevLogIndex >= len(rf.log) || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+			reply.Term = rf.currentTerm
+			reply.Success = false
+			DPrintf("Raft %d: AppendEntries rejected due to log inconsistency at index %d from leader %d", rf.me, args.PrevLogIndex, args.LeaderId)
+			return
+		}
+	}
+
+	// 删除与新条目冲突的现有条目
+	if args.PrevLogIndex >= 0 && args.PrevLogIndex < len(rf.log) {
+		if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+			rf.log = rf.log[:args.PrevLogIndex+1] // 删除冲突条目及之后的所有条目
+			DPrintf("Raft %d: Log truncated at index %d due to term conflict from leader %d", rf.me, args.PrevLogIndex, args.LeaderId)
+		}
+	}
+
+	// 附加新的日志条目（若存在）
+	if len(args.Entries) > 0 {
+		rf.log = append(rf.log, args.Entries...)
+		DPrintf("Raft %d: Appended new log entries from leader %d", rf.me, args.LeaderId)
+	}
+
+	// 更新 commitIndex
+	if args.LeaderCommit > rf.commitIndex {
+		rf.commitIndex = min(args.LeaderCommit, len(rf.log)-1)
+		DPrintf("Raft %d: Updated commitIndex to %d from leader %d", rf.me, rf.commitIndex, args.LeaderId)
+	}
+
+	// 最后设置回复
+	rf.lastHeard = time.Now()
+	reply.Term = rf.currentTerm
+	reply.Success = true
+	DPrintf("Raft %d: AppendEntries succeeded from leader %d", rf.me, args.LeaderId)
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
+	DPrintf("Raft %d RequestVote from %d", rf.me, args.CandidateId)
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
+	if args.Term < rf.currentTerm {
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = false
+		return
+	} else if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
+		rf.state = Follower
+		rf.votedFor = -1
+		reply.VoteGranted = false
+	}
+	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = true
+		rf.votedFor = args.CandidateId
+	} else {
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = false
+	}
 }
 
 // 发送 RequestVote RPC 给服务器的示例代码。
@@ -180,6 +261,46 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
+}
+
+func (rf *Raft) sendAppendEntries(server int) {
+	rf.mu.Lock()
+	var prevLogTerm int
+	var prevLogIndex int
+	if len(rf.log) > 0 {
+		prevLogTerm = rf.log[len(rf.log)-1].Term
+		prevLogIndex = len(rf.log) - 1
+	} else {
+		prevLogTerm = 0   // 没有日志时的默认 Term
+		prevLogIndex = -1 // 没有日志时的默认索引
+	}
+
+	// 构造 AppendEntries 请求
+	args := AppendEntriesArgs{
+		Term:         rf.currentTerm,
+		LeaderId:     rf.me,
+		PrevLogIndex: prevLogIndex,
+		PrevLogTerm:  prevLogTerm,
+		Entries:      nil,
+		LeaderCommit: rf.commitIndex,
+	}
+	rf.mu.Unlock()
+	reply := AppendEntriesReply{}
+	ok := rf.peers[server].Call("Raft.AppendEntries", &args, &reply)
+	if ok {
+		if reply.Success {
+			DPrintf("Raft %d AppendEntries to %d success", rf.me, server)
+		} else if reply.Term > rf.currentTerm {
+			rf.currentTerm = reply.Term
+			rf.state = Follower
+			rf.votedFor = -1
+		}
+	} else {
+		DPrintf("Raft %d AppendEntries to %d failed", rf.me, server)
+		rf.state = Follower
+		rf.votedFor = -1
+	}
+
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
@@ -225,27 +346,71 @@ func (rf *Raft) killed() bool {
 
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
+		DPrintf("Raft %d ticker,state: %v,time.Now().Sub(rf.lastHeard):%v", rf.me, rf.state, time.Now().Sub(rf.lastHeard))
 		rf.mu.Lock()
-		// Your code here (3A)
-		// Check if a leader election should be started.
-		if rf.state == Follower && time.Now().Sub(rf.lastHeard) > 150*time.Millisecond {
+		// 触发选举
+		if rf.state == Follower && time.Since(rf.lastHeard) > rf.electionTimeout {
+			DPrintf("Raft %d is Follower", rf.me)
 			rf.state = Candidate
-			rf.lastHeard = time.Now()
+			rf.mu.Unlock()
+		} else if rf.state == Leader {
+			now := time.Now()
+			DPrintf("Raft %d is Leader", rf.me)
+			if now.Sub(rf.lastHeartbeatSent) >= time.Duration(100)*time.Millisecond {
+				for i := range rf.peers {
+					if i != rf.me {
+						go rf.sendAppendEntries(i)
+					}
+				}
+				// 记录最后一次心跳的时间
+				rf.lastHeartbeatSent = now
+			}
+			rf.mu.Unlock()
+		} else if rf.state == Candidate && time.Since(rf.lastHeard) > rf.electionTimeout {
 			rf.currentTerm++
 			rf.votedFor = rf.me
-			args := RequestVoteArgs{
-				term:         rf.currentTerm,
-				candidateId:  rf.me,                      // 当前节点的 ID
-				lastLogIndex: len(rf.log) - 1,            // 假设的日志索引
-				lastLogTerm:  rf.log[len(rf.log)-1].Term, // 假设的日志任期号
+			LastLogIndex := -1
+			LastLogTerm := -1
+			if len(rf.log) > 0 {
+				LastLogIndex = len(rf.log) - 1
+				LastLogTerm = rf.log[LastLogIndex].Term
 			}
-			reply := RequestVoteReply{}
+			rf.mu.Unlock()
+			args := RequestVoteArgs{
+				Term:         rf.currentTerm,
+				CandidateId:  rf.me,        // 当前节点的 ID
+				LastLogIndex: LastLogIndex, // 假设的日志索引
+				LastLogTerm:  LastLogTerm,  // 假设的日志任期号
+			}
+			cnt := 1
+			// 使用 sync.WaitGroup 等待所有请求完成
+			var wg sync.WaitGroup
 			for i := range rf.peers {
-				if i != rf.me { // 不向自己发送请求
-					go rf.sendRequestVote(i, &args, &reply)
+				if i != rf.me {
+					wg.Add(1)
+					go func(i int) {
+						defer wg.Done()
+						reply := RequestVoteReply{}
+						rf.sendRequestVote(i, &args, &reply)
+						if reply.VoteGranted {
+							rf.mu.Lock()
+							cnt++
+							rf.mu.Unlock()
+						}
+					}(i)
 				}
 			}
-
+			// 等待所有的 goroutine 完成
+			wg.Wait()
+			DPrintf("Raft %d get %d votes", rf.me, cnt)
+			// 在所有请求完成后判断是否获得多数票
+			if cnt > len(rf.peers)/2 {
+				rf.mu.Lock()
+				rf.state = Leader
+				rf.mu.Unlock()
+			} else {
+				rf.state = Follower
+			}
 		}
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
@@ -254,15 +419,11 @@ func (rf *Raft) ticker() {
 	}
 }
 
-// the service or tester wants to create a Raft server. the ports
-// of all the Raft servers (including this one) are in peers[]. this
-// server's port is peers[me]. all the servers' peers[] arrays
-// have the same order. persister is a place for this server to
-// save its persistent state, and also initially holds the most
-// recent saved state, if any. applyCh is a channel on which the
-// tester or service expects Raft to send ApplyMsg messages.
-// Make() must return quickly, so it should start goroutines
-// for any long-running work.
+// 服务或测试器希望创建一个 Raft 服务器。所有 Raft 服务器（包括这个）的端口都在 peers[] 中。
+// 这个服务器的端口是 peers[me]。所有服务器的 peers[] 数组顺序相同。
+// persister 是一个保存这个服务器持久化状态的地方，并且最初持有最近保存的状态（如果有的话）。
+// applyCh 是一个通道，Raft 应该通过它向服务（或测试器）发送 ApplyMsg 消息。
+// Make() 必须快速返回，因此它应该为任何长时间运行的工作启动 goroutine。
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
@@ -272,7 +433,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// Your initialization code here (3A, 3B, 3C).
 
-	rf.initialize()
+	rf.state = Follower
+	rf.votedFor = -1
+	rf.currentTerm = 0
+	rf.log = make([]LogEntry, 0)
+	rf.commitIndex = 0
+	rf.lastHeard = time.Now()
+	rf.electionTimeout = time.Duration(rand.Intn(150)+150) * time.Millisecond
+
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
@@ -280,10 +448,4 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	go rf.ticker()
 
 	return rf
-}
-
-func (rf *Raft) initialize() {
-	// 使用 rand 生成 150 毫秒到 300 毫秒之间的随机时间
-	rf.electionTimeout = time.Duration(150+rand.Intn(150)) * time.Millisecond
-	rf.lastHeard = time.Now()
 }
