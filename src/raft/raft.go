@@ -29,14 +29,14 @@ import (
 
 // A Go object implementing a single Raft peer.
 type Raft struct {
-	mu                sync.Mutex          // Lock to protect shared access to this peer's state
+	mu                sync.RWMutex        // Lock to protect shared access to this peer's state
 	peers             []*labrpc.ClientEnd // RPC end points of all peers
 	persister         *Persister          // Object to hold this peer's persisted state
 	me                int                 // this peer's index into peers[]
 	dead              int32               // set by Kill()
 	state             int                 // 当前节点的状态
 	lastHeard         time.Time           // 上次收到心跳的时间
-	electionTimeout   time.Duration       // 选举超时时间
+	electionTimeout   time.Time           // 选举超时时间
 	currentTerm       int                 // 当前节点的任期号
 	votedFor          int                 // 当前节点投票给了谁
 	log               []LogEntry          // 日志条目
@@ -168,59 +168,30 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	// 如果领导者的任期小于当前任期，拒绝请求
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
 		reply.Success = false
-		DPrintf("Raft %d: AppendEntries rejected due to stale term from leader %d", rf.me, args.LeaderId)
 		return
 	}
 
-	if args.Term > rf.currentTerm {
-		rf.becomeFollower(args.Term)
-	}
-
+	// 更新心跳时间
 	rf.lastHeard = time.Now()
-
-	// 日志索引和任期检查
-	if args.PrevLogIndex >= 0 {
-		if args.PrevLogIndex >= len(rf.log) || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
-			reply.Term = rf.currentTerm
-			reply.Success = false
-			DPrintf("Raft %d: AppendEntries rejected due to log inconsistency at index %d", rf.me, args.PrevLogIndex)
-			return
-		}
-	}
-
-	// 删除冲突的日志
-	if args.PrevLogIndex >= 0 && args.PrevLogIndex < len(rf.log) {
-		if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
-			rf.log = rf.log[:args.PrevLogIndex+1]
-			DPrintf("Raft %d: Log truncated at index %d due to term conflict", rf.me, args.PrevLogIndex)
-		}
-	}
-
-	// 附加新日志
-	if len(args.Entries) > 0 {
-		rf.log = append(rf.log, args.Entries...)
-		DPrintf("Raft %d: Appended new log entries", rf.me)
-	}
-
-	// 更新 commitIndex
-	if args.LeaderCommit > rf.commitIndex {
-		rf.commitIndex = min(args.LeaderCommit, len(rf.log)-1)
-		DPrintf("Raft %d: Updated commitIndex to %d", rf.me, rf.commitIndex)
-	}
-
+	rf.resetElectionTimeout()
+	rf.state = Follower
 	reply.Term = rf.currentTerm
 	reply.Success = true
-	DPrintf("Raft %d: AppendEntries succeeded", rf.me)
-}
 
-func (rf *Raft) becomeFollower(term int) {
-	rf.currentTerm = term
-	rf.state = Follower
-	rf.votedFor = -1
-	rf.lastHeard = time.Now()
+	if args.Term > rf.currentTerm {
+		rf.votedFor = -1
+		rf.currentTerm = args.Term
+		reply.Term = rf.currentTerm // 将更新了的任期传给主结点
+	}
+
+	// 更新 commitIndex（领导者提交的日志索引可能比当前高）
+	if args.LeaderCommit > rf.commitIndex {
+		rf.commitIndex = min(args.LeaderCommit, len(rf.log)-1)
+	}
 }
 
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
@@ -228,34 +199,58 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	defer rf.mu.Unlock()
 
 	if args.Term < rf.currentTerm {
+		DPrintf("Raft %d: Rejecting vote request from %d due to lower term", rf.me, args.CandidateId)
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
 		return
 	}
+
 	if args.Term > rf.currentTerm {
-		rf.becomeFollower(args.Term)
+		rf.currentTerm = args.Term
+		rf.state = Follower
+		rf.votedFor = -1
 	}
 
-	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
-		reply.VoteGranted = true
+	reply.Term = rf.currentTerm
+
+	if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) && rf.isLogUpToDate(args.LastLogIndex, args.LastLogTerm) {
 		rf.votedFor = args.CandidateId
+		reply.VoteGranted = true
 		rf.lastHeard = time.Now()
 	} else {
 		reply.VoteGranted = false
 	}
-	reply.Term = rf.currentTerm
+
+}
+
+func (rf *Raft) isLogUpToDate(lastLogIndex int, lastLogTerm int) bool {
+	if len(rf.log) == 0 {
+		return true
+	}
+	localLastLogIndex := len(rf.log) - 1
+	localLastLogTerm := rf.log[localLastLogIndex].Term
+	if lastLogTerm != localLastLogTerm {
+		return lastLogTerm > localLastLogTerm
+	}
+	return lastLogIndex >= localLastLogIndex
 }
 
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	if !ok {
 		DPrintf("Raft %d: Failed to send RequestVote to %d (network issue)", rf.me, server)
+	} else {
+		DPrintf("Raft %d: Sent RequestVote to %d", rf.me, server)
 	}
 	return ok
 }
 
 func (rf *Raft) sendAppendEntries(server int) {
 	rf.mu.Lock()
+	if rf.state != Leader {
+		rf.mu.Unlock()
+		return
+	}
 	prevLogIndex := len(rf.log) - 1
 	prevLogTerm := 0
 	if prevLogIndex >= 0 {
@@ -272,36 +267,49 @@ func (rf *Raft) sendAppendEntries(server int) {
 	rf.mu.Unlock()
 
 	reply := AppendEntriesReply{}
+
 	ok := rf.peers[server].Call("Raft.AppendEntries", &args, &reply)
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+
 	if ok {
 		if reply.Term > rf.currentTerm {
-			rf.becomeFollower(reply.Term)
+			rf.currentTerm = reply.Term
+			rf.state = Follower
+			rf.votedFor = -1
+			DPrintf("Raft %d: Downgraded to follower due to higher term from %d", rf.me, server)
 		}
-	} else {
-		DPrintf("Raft %d AppendEntries to %d failed", rf.me, server)
 	}
 }
 
 func (rf *Raft) ticker() {
 	for !rf.killed() {
-		now := time.Now()
-		if rf.state == Follower && time.Since(rf.lastHeard) > rf.electionTimeout {
-			rf.startElection()
-		} else if rf.state == Leader && now.Sub(rf.lastHeartbeatSent) >= 100*time.Millisecond {
-			for i := range rf.peers {
-				if i != rf.me {
-					go rf.sendAppendEntries(i)
-				} else {
-					rf.lastHeard = now
-				}
+		rf.mu.Lock()
+		state := rf.state
+		rf.mu.Unlock()
+
+		switch state {
+		case Follower, Candidate:
+			if rf.judgeTimeout() {
+				rf.startElection()
 			}
-			rf.lastHeartbeatSent = now
+		case Leader:
+			rf.mu.Lock()
+			if time.Since(rf.lastHeartbeatSent) >= 150*time.Millisecond {
+				rf.lastHeartbeatSent = time.Now()
+				rf.mu.Unlock()
+				for i := range rf.peers {
+					if i != rf.me {
+						go rf.sendAppendEntries(i)
+					}
+				}
+			} else {
+				rf.mu.Unlock()
+			}
 		}
 
-		time.Sleep(time.Duration(50+rand.Int63()%300) * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -310,47 +318,66 @@ func (rf *Raft) startElection() {
 	rf.state = Candidate
 	rf.currentTerm++
 	rf.votedFor = rf.me
-	rf.lastHeard = time.Now()
-	rf.mu.Unlock()
+	rf.resetElectionTimeout()
+
+	lastLogIndex := len(rf.log) - 1
+	lastLogTerm := -1
+	if lastLogIndex >= 0 {
+		lastLogTerm = rf.log[lastLogIndex].Term
+	}
+
 	args := RequestVoteArgs{
 		Term:         rf.currentTerm,
 		CandidateId:  rf.me,
-		LastLogIndex: len(rf.log) - 1,
-		LastLogTerm:  rf.getLastLogTerm(),
-	}
-	var voteCount int32 = 1
-	var wg sync.WaitGroup
-	for i := range rf.peers {
-		if i != rf.me {
-			wg.Add(1)
-			go func(i int) {
-				defer wg.Done()
-				reply := RequestVoteReply{}
-				if rf.sendRequestVote(i, &args, &reply) && reply.VoteGranted {
-					atomic.AddInt32(&voteCount, 1)
-				} else if reply.Term > rf.currentTerm {
-					rf.mu.Lock()
-					if reply.Term > rf.currentTerm {
-						rf.becomeFollower(reply.Term)
-					}
-					rf.mu.Unlock()
-				}
-			}(i)
-		} else {
-			rf.lastHeard = time.Now()
-		}
-	}
-	wg.Wait()
-
-	rf.mu.Lock()
-	if int(voteCount) > len(rf.peers)/2 {
-		rf.state = Leader
-		DPrintf("Raft %d won election, becoming Leader", rf.me)
-	} else {
-		rf.state = Follower
-		DPrintf("Raft %d lost election", rf.me)
+		LastLogIndex: lastLogIndex,
+		LastLogTerm:  lastLogTerm,
 	}
 	rf.mu.Unlock()
+
+	var voteCount int32 = 1
+	for i := range rf.peers {
+		if i != rf.me {
+			go func(i int) {
+				reply := RequestVoteReply{}
+				if rf.sendRequestVote(i, &args, &reply) {
+					rf.mu.Lock()
+					defer rf.mu.Unlock()
+
+					if reply.Term > rf.currentTerm {
+						rf.convertToFollower(reply.Term)
+					} else if reply.VoteGranted && rf.currentTerm == args.Term && rf.state == Candidate {
+						atomic.AddInt32(&voteCount, 1)
+						if int(voteCount) > len(rf.peers)/2 && rf.state == Candidate {
+							rf.state = Leader
+							rf.lastHeartbeatSent = time.Now()
+							rf.initLeaderState()
+						}
+					}
+				}
+			}(i)
+		}
+	}
+}
+
+func (rf *Raft) initLeaderState() {
+	// 立即发送心跳
+	for i := range rf.peers {
+		if i != rf.me {
+			go rf.sendAppendEntries(i)
+		}
+	}
+
+	DPrintf("Raft %d: Initialized as Leader for term %d", rf.me, rf.currentTerm)
+}
+
+func (rf *Raft) resetElectionTimeout() {
+	rf.electionTimeout = time.Now().Add(time.Duration(rand.Intn(200)+300) * time.Millisecond)
+}
+
+func (rf *Raft) judgeTimeout() bool {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return time.Now().After(rf.electionTimeout)
 }
 
 func (rf *Raft) getLastLogTerm() int {
@@ -380,8 +407,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.log = make([]LogEntry, 0)
 	rf.commitIndex = 0
 	rf.lastHeard = time.Now()
-	rf.electionTimeout = time.Duration(rand.Intn(400)+300) * time.Millisecond
-
+	rf.resetElectionTimeout()
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 

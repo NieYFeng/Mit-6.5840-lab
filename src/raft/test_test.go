@@ -104,7 +104,7 @@ func TestManyElections3A(t *testing.T) {
 	cfg.begin("Test (3A): multiple elections")
 
 	cfg.checkOneLeader()
-
+	DPrintf("Test (3A): all disconnect")
 	iters := 10
 	for ii := 1; ii < iters; ii++ {
 		// disconnect three nodes
@@ -117,8 +117,8 @@ func TestManyElections3A(t *testing.T) {
 
 		// either the current leader should still be alive,
 		// or the remaining four should elect a new one.
+		DPrintf("Test (3A): three disconnect")
 		cfg.checkOneLeader()
-
 		cfg.connect(i1)
 		cfg.connect(i2)
 		cfg.connect(i3)

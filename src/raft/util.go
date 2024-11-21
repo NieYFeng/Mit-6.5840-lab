@@ -41,3 +41,10 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+func (rf *Raft) convertToFollower(term int) {
+	rf.state = Follower
+	rf.currentTerm = term
+	rf.votedFor = -1
+	rf.resetElectionTimeout()
+}
