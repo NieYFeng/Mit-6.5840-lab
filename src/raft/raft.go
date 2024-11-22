@@ -17,8 +17,6 @@ package raft
 //   在相同的服务器上，将 CommandValid 设置为 true 以指示 ApplyMsg 包含一个新提交的日志条目。
 
 import (
-	//	"bytes"
-	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -206,9 +204,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	if args.Term > rf.currentTerm {
-		rf.currentTerm = args.Term
-		rf.state = Follower
-		rf.votedFor = -1
+		rf.convertToFollower(args.Term)
 	}
 
 	reply.Term = rf.currentTerm
@@ -221,18 +217,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = false
 	}
 
-}
-
-func (rf *Raft) isLogUpToDate(lastLogIndex int, lastLogTerm int) bool {
-	if len(rf.log) == 0 {
-		return true
-	}
-	localLastLogIndex := len(rf.log) - 1
-	localLastLogTerm := rf.log[localLastLogIndex].Term
-	if lastLogTerm != localLastLogTerm {
-		return lastLogTerm > localLastLogTerm
-	}
-	return lastLogIndex >= localLastLogIndex
 }
 
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
@@ -275,9 +259,7 @@ func (rf *Raft) sendAppendEntries(server int) {
 
 	if ok {
 		if reply.Term > rf.currentTerm {
-			rf.currentTerm = reply.Term
-			rf.state = Follower
-			rf.votedFor = -1
+			rf.convertToFollower(reply.Term)
 			DPrintf("Raft %d: Downgraded to follower due to higher term from %d", rf.me, server)
 		}
 	}
@@ -299,11 +281,7 @@ func (rf *Raft) ticker() {
 			if time.Since(rf.lastHeartbeatSent) >= 150*time.Millisecond {
 				rf.lastHeartbeatSent = time.Now()
 				rf.mu.Unlock()
-				for i := range rf.peers {
-					if i != rf.me {
-						go rf.sendAppendEntries(i)
-					}
-				}
+				rf.initLeaderState()
 			} else {
 				rf.mu.Unlock()
 			}
@@ -357,34 +335,6 @@ func (rf *Raft) startElection() {
 			}(i)
 		}
 	}
-}
-
-func (rf *Raft) initLeaderState() {
-	// 立即发送心跳
-	for i := range rf.peers {
-		if i != rf.me {
-			go rf.sendAppendEntries(i)
-		}
-	}
-
-	DPrintf("Raft %d: Initialized as Leader for term %d", rf.me, rf.currentTerm)
-}
-
-func (rf *Raft) resetElectionTimeout() {
-	rf.electionTimeout = time.Now().Add(time.Duration(rand.Intn(200)+300) * time.Millisecond)
-}
-
-func (rf *Raft) judgeTimeout() bool {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	return time.Now().After(rf.electionTimeout)
-}
-
-func (rf *Raft) getLastLogTerm() int {
-	if len(rf.log) == 0 {
-		return -1
-	}
-	return rf.log[len(rf.log)-1].Term
 }
 
 // 服务或测试器希望创建一个 Raft 服务器。所有 Raft 服务器（包括这个）的端口都在 peers[] 中。

@@ -1,6 +1,10 @@
 package raft
 
-import "log"
+import (
+	"log"
+	"math/rand"
+	"time"
+)
 
 // Debugging
 const Debug = false
@@ -47,4 +51,36 @@ func (rf *Raft) convertToFollower(term int) {
 	rf.currentTerm = term
 	rf.votedFor = -1
 	rf.resetElectionTimeout()
+}
+
+func (rf *Raft) initLeaderState() {
+	for i := range rf.peers {
+		if i != rf.me {
+			go rf.sendAppendEntries(i)
+		}
+	}
+
+	DPrintf("Raft %d: Initialized as Leader for term %d", rf.me, rf.currentTerm)
+}
+
+func (rf *Raft) resetElectionTimeout() {
+	rf.electionTimeout = time.Now().Add(time.Duration(rand.Intn(200)+300) * time.Millisecond)
+}
+
+func (rf *Raft) judgeTimeout() bool {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return time.Now().After(rf.electionTimeout)
+}
+
+func (rf *Raft) isLogUpToDate(lastLogIndex int, lastLogTerm int) bool {
+	if len(rf.log) == 0 {
+		return true
+	}
+	localLastLogIndex := len(rf.log) - 1
+	localLastLogTerm := rf.log[localLastLogIndex].Term
+	if lastLogTerm != localLastLogTerm {
+		return lastLogTerm > localLastLogTerm
+	}
+	return lastLogIndex >= localLastLogIndex
 }
